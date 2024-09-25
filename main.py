@@ -5,6 +5,8 @@ import time
 import os
 import random
 import datetime
+from keep_alive import keep_alive
+keep_alive()
 
 api_id = 12243932
 api_hash = 'b460e09ca05d1a1c9822afe0ea74be2d'
